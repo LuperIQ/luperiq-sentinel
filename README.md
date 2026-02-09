@@ -245,6 +245,17 @@ Bigger projects:
 - **Skill/plugin system** — Run third-party tools in sandboxed subprocesses
 - **LuperIQ Agent OS integration** — Wire up kernel capability handles
 
+## Disclaimer
+
+Sentinel is experimental software under active development. It is provided "as is" without warranty of any kind.
+
+- **Not production-ready.** The capability checker and security model are functional but have not been independently audited.
+- **Linux security is best-effort.** On Linux, security boundaries are enforced by application-level allowlists, not the OS kernel. A compromised Sentinel process could potentially bypass its own checks. The full security guarantee requires [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os).
+- **Do not use for sensitive data** without your own security review. Sentinel connects to third-party APIs (Anthropic, Telegram) and processes user messages — evaluate the privacy implications for your use case.
+- **Use at your own risk.** By using this software, you accept full responsibility for any consequences. See [DISCLAIMER.md](DISCLAIMER.md) for details.
+
+We are building toward production quality and welcome security researchers, testers, and contributors who want to help us get there.
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
