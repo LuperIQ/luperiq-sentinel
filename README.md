@@ -2,7 +2,7 @@
 
 **Secure AI Agent Runtime — Built from Scratch in Rust**
 
-LuperIQ Sentinel is a Rust-native AI agent runtime that connects Claude to Telegram with capability-based security. It replaces the Node.js/Chromium stack used by projects like OpenClaw with ~2,700 lines of Rust and only 2 crate dependencies. When running on [LuperIQ OS](https://github.com/LuperIQ/luperiq-kernel), the kernel enforces security boundaries that software alone cannot.
+LuperIQ Sentinel is a Rust-native AI agent runtime that connects Claude to Telegram with capability-based security. It replaces the Node.js/Chromium stack used by projects like OpenClaw with ~2,700 lines of Rust and only 2 crate dependencies. When running on [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os), the kernel enforces security boundaries that software alone cannot.
 
 ## Current Status: MVP Working
 
@@ -41,7 +41,7 @@ See [STATUS.md](STATUS.md) for the full development roadmap. The short version:
 | 4 | OpenAI/GPT provider | Small | Not started |
 | 5 | WebSocket control plane | Medium | Not started |
 | 6 | seccomp/landlock sandboxing (Linux) | Large | Not started |
-| 7 | LuperIQ OS capability integration | Large | Not started |
+| 7 | LuperIQ Agent OS capability integration | Large | Not started |
 | 8 | Skill/plugin system | Large | Not started |
 | 9 | Signal connector | Medium | Not started |
 | 10 | Web-based permission dashboard | Large | Not started |
@@ -190,11 +190,11 @@ The MVP implements **allowlist-based capability checking**:
 - **All tool calls**: logged as JSON-line audit events (allowed and denied)
 - **User authorization**: Telegram user IDs checked against allowlist (empty = allow all)
 
-On LuperIQ OS (future), these checks will be enforced by the kernel via capability handles — the agent process literally won't have the ability to access resources outside its grant. On Linux, these are application-level checks.
+On [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os) (future), these checks will be enforced by the kernel via capability handles — the agent process literally won't have the ability to access resources outside its grant. On Linux, these are application-level checks.
 
 ## The Vision
 
-Sentinel on Linux is step one. The full security story requires [LuperIQ OS](https://github.com/LuperIQ/luperiq-kernel):
+Sentinel on Linux is step one. The full security story requires [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os):
 
 | Layer | Linux (current) | LuperIQ OS (planned) |
 |-------|----------------|---------------------|
@@ -243,17 +243,18 @@ Bigger projects:
 - **seccomp/landlock sandboxing** — Linux-level process isolation
 - **WebSocket control plane** — OpenClaw protocol compatibility
 - **Skill/plugin system** — Run third-party tools in sandboxed subprocesses
-- **LuperIQ OS integration** — Wire up kernel capability handles
+- **LuperIQ Agent OS integration** — Wire up kernel capability handles
 
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
 
-The full security story (OS-enforced capabilities, immutable audit log, kernel-level isolation) requires [LuperIQ OS](https://github.com/LuperIQ/luperiq-kernel), which is dual-licensed under GPLv3 + Commercial.
+The full security story (OS-enforced capabilities, immutable audit log, kernel-level isolation) requires [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os), which is dual-licensed under GPLv3 + Commercial.
 
 ## Links
 
-- **LuperIQ OS** — https://github.com/LuperIQ/luperiq-kernel
+- **LuperIQ Agent OS** — https://github.com/LuperIQ/luperiq-agent-os
+- **LuperIQ Kernel** — https://github.com/LuperIQ/luperiq-kernel
 - **Architecture docs** — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - **Security model** — [docs/SECURITY.md](docs/SECURITY.md)
 - **Development status** — [STATUS.md](STATUS.md)
