@@ -1,0 +1,29 @@
+# LuperIQ Sentinel Configuration
+# Copy to sentinel.toml and customize.
+# Secrets are loaded from environment variables (never put keys in this file).
+
+[anthropic]
+# Environment variable containing your Anthropic API key
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 4096
+
+[agent]
+# Optional system prompt for the AI agent
+# system_prompt = "You are a helpful assistant."
+
+[telegram]
+# Environment variable containing your Telegram bot token
+token_env = "TELEGRAM_BOT_TOKEN"
+# Telegram user IDs allowed to interact with the bot (empty = allow all)
+allowed_users = []
+
+[security]
+# Paths the agent is allowed to read from
+allowed_read_paths = ["/tmp"]
+# Paths the agent is allowed to write to
+allowed_write_paths = ["/tmp"]
+# Commands the agent is allowed to execute
+allowed_commands = ["ls", "cat", "echo", "date"]
+# Optional path for audit log file (also logs to stderr)
+# audit_log_path = "/var/log/sentinel/audit.jsonl"
