@@ -2,15 +2,28 @@
 # Copy to sentinel.toml and customize.
 # Secrets are loaded from environment variables (never put keys in this file).
 
+[agent]
+# LLM provider: "anthropic" (default) or "openai"
+# The "openai" provider works with OpenAI, Ollama, vLLM, LM Studio, and other
+# OpenAI-compatible APIs.
+provider = "anthropic"
+# Optional system prompt for the AI agent
+# system_prompt = "You are a helpful assistant."
+
 [anthropic]
 # Environment variable containing your Anthropic API key
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-sonnet-4-5-20250929"
 max_tokens = 4096
 
-[agent]
-# Optional system prompt for the AI agent
-# system_prompt = "You are a helpful assistant."
+[openai]
+# Uncomment to use OpenAI or compatible API
+# api_key_env = "OPENAI_API_KEY"
+# model = "gpt-4o"
+# max_tokens = 4096
+# Base URL (change for Ollama, vLLM, LM Studio, etc.)
+# base_url = "https://api.openai.com/v1"
+# Example for Ollama: base_url = "https://localhost:11434/v1"
 
 [telegram]
 # Environment variable containing your Telegram bot token
@@ -25,5 +38,7 @@ allowed_read_paths = ["/tmp"]
 allowed_write_paths = ["/tmp"]
 # Commands the agent is allowed to execute
 allowed_commands = ["ls", "cat", "echo", "date"]
+# Maximum seconds a command can run before being killed (default: 30)
+command_timeout = 30
 # Optional path for audit log file (also logs to stderr)
 # audit_log_path = "/var/log/sentinel/audit.jsonl"

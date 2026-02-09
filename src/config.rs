@@ -5,15 +5,18 @@ use std::fs;
 // ── Config struct ───────────────────────────────────────────────────────────
 
 pub struct Config {
-    pub anthropic_api_key: String,
+    pub provider: String,
+    pub api_key: String,
     pub model: String,
     pub max_tokens: u32,
+    pub openai_base_url: String,
     pub system_prompt: Option<String>,
     pub telegram_token: String,
     pub telegram_allowed_users: Vec<i64>,
     pub allowed_read_paths: Vec<String>,
     pub allowed_write_paths: Vec<String>,
     pub allowed_commands: Vec<String>,
+    pub command_timeout: u64,
     pub audit_log_path: Option<String>,
 }
 
@@ -75,19 +78,39 @@ impl Config {
             Vec::new()
         };
 
-        // API key: support env var indirection from TOML
-        let anthropic_api_key = resolve_secret(&toml, "anthropic", "api_key_env", "ANTHROPIC_API_KEY")
-            .ok_or_else(|| ConfigError("ANTHROPIC_API_KEY not set".into()))?;
+        // Provider selection: "anthropic" (default) or "openai"
+        let provider = get_str("agent", "provider", "SENTINEL_PROVIDER")
+            .unwrap_or_else(|| "anthropic".to_string());
+
+        // API key: try provider-specific env first, then fall back
+        let api_key = if provider == "openai" {
+            resolve_secret(&toml, "openai", "api_key_env", "OPENAI_API_KEY")
+                .or_else(|| resolve_secret(&toml, "anthropic", "api_key_env", "ANTHROPIC_API_KEY"))
+                .ok_or_else(|| ConfigError("OPENAI_API_KEY not set".into()))?
+        } else {
+            resolve_secret(&toml, "anthropic", "api_key_env", "ANTHROPIC_API_KEY")
+                .ok_or_else(|| ConfigError("ANTHROPIC_API_KEY not set".into()))?
+        };
 
         let telegram_token = resolve_secret(&toml, "telegram", "token_env", "TELEGRAM_BOT_TOKEN")
             .ok_or_else(|| ConfigError("TELEGRAM_BOT_TOKEN not set".into()))?;
 
+        let default_model = if provider == "openai" {
+            "gpt-4o".to_string()
+        } else {
+            "claude-sonnet-4-5-20250929".to_string()
+        };
         let model = get_str("anthropic", "model", "SENTINEL_MODEL")
-            .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
+            .or_else(|| get_str("openai", "model", "SENTINEL_MODEL"))
+            .unwrap_or(default_model);
 
         let max_tokens = get_str("anthropic", "max_tokens", "SENTINEL_MAX_TOKENS")
+            .or_else(|| get_str("openai", "max_tokens", "SENTINEL_MAX_TOKENS"))
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(4096);
+
+        let openai_base_url = get_str("openai", "base_url", "OPENAI_BASE_URL")
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
         let system_prompt = get_str("agent", "system_prompt", "SENTINEL_SYSTEM_PROMPT");
 
@@ -101,18 +124,25 @@ impl Config {
         let allowed_commands =
             get_str_list("security", "allowed_commands", "SENTINEL_COMMANDS");
 
+        let command_timeout = get_str("security", "command_timeout", "SENTINEL_COMMAND_TIMEOUT")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30);
+
         let audit_log_path = get_str("security", "audit_log_path", "SENTINEL_AUDIT_LOG");
 
         Ok(Config {
-            anthropic_api_key,
+            provider,
+            api_key,
             model,
             max_tokens,
+            openai_base_url,
             system_prompt,
             telegram_token,
             telegram_allowed_users,
             allowed_read_paths,
             allowed_write_paths,
             allowed_commands,
+            command_timeout,
             audit_log_path,
         })
     }
@@ -313,5 +343,72 @@ allowed_commands = ["ls", "cat"]
             doc.get_str_list("security", "allowed_read_paths").unwrap(),
             vec!["/tmp", "/home/user"]
         );
+    }
+
+    #[test]
+    fn test_parse_toml_empty_arrays() {
+        let input = r#"
+[security]
+allowed_commands = []
+"#;
+        let doc = parse_toml(input).unwrap();
+        assert_eq!(
+            doc.get_str_list("security", "allowed_commands").unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_parse_toml_boolean() {
+        let input = r#"
+[agent]
+verbose = true
+"#;
+        let doc = parse_toml(input).unwrap();
+        assert_eq!(doc.get_str("agent", "verbose").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_parse_toml_comments_stripped() {
+        let input = r#"
+[section]
+key = "value" # this is a comment
+"#;
+        let doc = parse_toml(input).unwrap();
+        assert_eq!(doc.get_str("section", "key").unwrap(), "value");
+    }
+
+    #[test]
+    fn test_parse_toml_missing_key() {
+        let input = r#"
+[section]
+key = "value"
+"#;
+        let doc = parse_toml(input).unwrap();
+        assert!(doc.get_str("section", "nonexistent").is_none());
+        assert!(doc.get_str("nonexistent", "key").is_none());
+    }
+
+    #[test]
+    fn test_parse_toml_value_types() {
+        assert!(matches!(parse_toml_value("42").unwrap(), TomlValue::Int(42)));
+        assert!(matches!(parse_toml_value("-5").unwrap(), TomlValue::Int(-5)));
+        assert!(matches!(parse_toml_value("\"hello\"").unwrap(), TomlValue::Str(s) if s == "hello"));
+    }
+
+    #[test]
+    fn test_parse_toml_invalid_line() {
+        let input = "no_section_key";
+        assert!(parse_toml(input).is_err());
+    }
+
+    #[test]
+    fn test_parse_toml_command_timeout() {
+        let input = r#"
+[security]
+command_timeout = 60
+"#;
+        let doc = parse_toml(input).unwrap();
+        assert_eq!(doc.get_str("security", "command_timeout").unwrap(), "60");
     }
 }

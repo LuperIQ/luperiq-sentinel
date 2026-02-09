@@ -95,30 +95,78 @@ impl TelegramClient {
     pub fn send_message(&self, chat_id: i64, text: &str) -> Result<(), TelegramError> {
         let chunks = split_message(text);
         for chunk in &chunks {
-            let body = json_obj()
-                .field_i64("chat_id", chat_id)
-                .field_str("text", chunk)
-                .build();
+            self.send_message_raw(chat_id, chunk)?;
+        }
+        Ok(())
+    }
 
-            let url = format!("{}/sendMessage", self.base_url);
-            let resp = self.http.post_json(&url, &body.to_json_string(), &[])?;
+    /// Send a message and return its message_id (for later editing).
+    pub fn send_message_get_id(&self, chat_id: i64, text: &str) -> Result<i64, TelegramError> {
+        self.send_message_raw(chat_id, text)
+    }
 
-            let body_str = resp
-                .body_string()
-                .map_err(|e| TelegramError::Http(e))?;
-            let json =
-                json::parse(&body_str).map_err(|e| TelegramError::Json(e.to_string()))?;
+    /// Edit an existing message's text.
+    pub fn edit_message_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+    ) -> Result<(), TelegramError> {
+        let body = json_obj()
+            .field_i64("chat_id", chat_id)
+            .field_i64("message_id", message_id)
+            .field_str("text", text)
+            .build();
 
-            let ok = json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-            if !ok {
-                let desc = json
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown error");
+        let url = format!("{}/editMessageText", self.base_url);
+        let resp = self.http.post_json(&url, &body.to_json_string(), &[])?;
+
+        let body_str = resp.body_string().map_err(|e| TelegramError::Http(e))?;
+        let json = json::parse(&body_str).map_err(|e| TelegramError::Json(e.to_string()))?;
+
+        let ok = json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let desc = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            // "message is not modified" is not a real error — just means text didn't change
+            if !desc.contains("message is not modified") {
                 return Err(TelegramError::Api(desc.to_string()));
             }
         }
         Ok(())
+    }
+
+    fn send_message_raw(&self, chat_id: i64, text: &str) -> Result<i64, TelegramError> {
+        let body = json_obj()
+            .field_i64("chat_id", chat_id)
+            .field_str("text", text)
+            .build();
+
+        let url = format!("{}/sendMessage", self.base_url);
+        let resp = self.http.post_json(&url, &body.to_json_string(), &[])?;
+
+        let body_str = resp.body_string().map_err(|e| TelegramError::Http(e))?;
+        let json = json::parse(&body_str).map_err(|e| TelegramError::Json(e.to_string()))?;
+
+        let ok = json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            let desc = json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
+            return Err(TelegramError::Api(desc.to_string()));
+        }
+
+        // Extract message_id from result
+        let message_id = json
+            .get("result")
+            .and_then(|r| r.get("message_id"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        Ok(message_id)
     }
 }
 

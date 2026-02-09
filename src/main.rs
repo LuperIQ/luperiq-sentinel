@@ -7,11 +7,13 @@ mod security;
 
 use std::collections::HashMap;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::agent::tools::ToolExecutor;
 use crate::config::Config;
-use crate::llm::anthropic::{AnthropicClient, AnthropicError, ContentBlock, Message, Role, StopReason};
+use crate::llm::anthropic::AnthropicClient;
+use crate::llm::openai::OpenAiClient;
+use crate::llm::provider::{ContentBlock, LlmError, LlmProvider, Message, Role, StopReason, ToolDef};
 use crate::messaging::telegram::TelegramClient;
 use crate::net::http::HttpClient;
 use crate::security::audit::{AuditEvent, Auditor};
@@ -45,23 +47,47 @@ fn main() {
         }
     };
 
-    let anthropic = AnthropicClient::new(
-        match HttpClient::new() {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("sentinel: fatal: {}", e);
-                std::process::exit(1);
-            }
-        },
-        config.anthropic_api_key.clone(),
-        config.model.clone(),
-        config.max_tokens,
-    );
+    // Create LLM provider based on config
+    let llm: Box<dyn LlmProvider> = match config.provider.as_str() {
+        "openai" => {
+            let llm_http = match HttpClient::new() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("sentinel: fatal: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            eprintln!("sentinel: using OpenAI provider ({})", config.openai_base_url);
+            Box::new(OpenAiClient::new(
+                llm_http,
+                config.api_key.clone(),
+                config.model.clone(),
+                config.max_tokens,
+                config.openai_base_url.clone(),
+            ))
+        }
+        _ => {
+            let llm_http = match HttpClient::new() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("sentinel: fatal: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            eprintln!("sentinel: using Anthropic provider");
+            Box::new(AnthropicClient::new(
+                llm_http,
+                config.api_key.clone(),
+                config.model.clone(),
+                config.max_tokens,
+            ))
+        }
+    };
 
     let mut telegram = TelegramClient::new(http, &config.telegram_token);
 
     let tool_defs = ToolExecutor::tool_definitions();
-    let tool_executor = ToolExecutor::new(&caps);
+    let tool_executor = ToolExecutor::new(&caps, config.command_timeout);
 
     // Per-chat conversation history
     let mut conversations: HashMap<i64, Vec<Message>> = HashMap::new();
@@ -117,20 +143,18 @@ fn main() {
                 }],
             });
 
-            // Run agent turn
+            // Run agent turn with streaming
             match run_agent_turn(
-                &anthropic,
+                llm.as_ref(),
                 history,
                 &config,
                 &tool_defs,
                 &tool_executor,
                 &mut auditor,
+                &telegram,
+                msg.chat_id,
             ) {
-                Ok(response_text) => {
-                    if let Err(e) = telegram.send_message(msg.chat_id, &response_text) {
-                        eprintln!("sentinel: failed to send message: {}", e);
-                    }
-                }
+                Ok(()) => {}
                 Err(e) => {
                     eprintln!("sentinel: agent error: {}", e);
                     let error_msg = format!("Error: {}", e);
@@ -148,28 +172,61 @@ fn main() {
 }
 
 fn run_agent_turn(
-    anthropic: &AnthropicClient,
+    llm: &dyn LlmProvider,
     history: &mut Vec<Message>,
     config: &Config,
-    tool_defs: &[llm::anthropic::ToolDef],
+    tool_defs: &[ToolDef],
     tool_executor: &ToolExecutor,
     auditor: &mut Auditor,
-) -> Result<String, String> {
+    telegram: &TelegramClient,
+    chat_id: i64,
+) -> Result<(), String> {
     let system = config.system_prompt.as_deref();
 
     for _round in 0..MAX_TOOL_ROUNDS {
-        let api_resp = match anthropic.send(system, history, tool_defs) {
-            Ok(r) => r,
-            Err(AnthropicError::RateLimit { retry_after }) => {
-                let wait = retry_after.unwrap_or(10);
-                eprintln!("sentinel: rate limited, waiting {}s", wait);
-                thread::sleep(Duration::from_secs(wait));
-                // Retry once
-                anthropic
-                    .send(system, history, tool_defs)
-                    .map_err(|e| format!("Claude API error: {}", e))?
+        // Streaming state for real-time Telegram updates
+        let mut streamed_text = String::new();
+        let mut telegram_msg_id: Option<i64> = None;
+        let mut last_edit = Instant::now();
+
+        let api_resp = {
+            let streamed_text_ref = &mut streamed_text;
+            let telegram_msg_id_ref = &mut telegram_msg_id;
+            let last_edit_ref = &mut last_edit;
+
+            let mut on_text = |delta: &str| {
+                streamed_text_ref.push_str(delta);
+
+                // Send/edit Telegram message periodically (every 500ms)
+                let should_update = last_edit_ref.elapsed() >= Duration::from_millis(500);
+                if !should_update {
+                    return;
+                }
+
+                if let Some(msg_id) = *telegram_msg_id_ref {
+                    let _ = telegram.edit_message_text(chat_id, msg_id, streamed_text_ref);
+                } else if streamed_text_ref.len() >= 10 {
+                    // Wait for at least 10 chars before sending initial message
+                    match telegram.send_message_get_id(chat_id, streamed_text_ref) {
+                        Ok(id) => *telegram_msg_id_ref = Some(id),
+                        Err(e) => eprintln!("sentinel: stream send error: {}", e),
+                    }
+                }
+                *last_edit_ref = Instant::now();
+            };
+
+            match llm.send_streaming(system, history, tool_defs, &mut on_text) {
+                Ok(r) => r,
+                Err(LlmError::RateLimit { retry_after }) => {
+                    let wait = retry_after.unwrap_or(10);
+                    eprintln!("sentinel: rate limited, waiting {}s", wait);
+                    thread::sleep(Duration::from_secs(wait));
+                    // Retry once (non-streaming fallback)
+                    llm.send(system, history, tool_defs)
+                        .map_err(|e| format!("LLM API error: {}", e))?
+                }
+                Err(e) => return Err(format!("LLM API error: {}", e)),
             }
-            Err(e) => return Err(format!("Claude API error: {}", e)),
         };
 
         // Add assistant response to history
@@ -180,11 +237,29 @@ fn run_agent_turn(
 
         match api_resp.stop_reason {
             StopReason::EndTurn | StopReason::MaxTokens => {
-                // Extract text from response
                 let text = extract_text(&api_resp.content);
-                return Ok(text);
+
+                // Send final text via Telegram
+                if let Some(msg_id) = telegram_msg_id {
+                    // Edit with final complete text
+                    let _ = telegram.edit_message_text(chat_id, msg_id, &text);
+                } else {
+                    // No streaming happened (or very short response) — send normally
+                    if let Err(e) = telegram.send_message(chat_id, &text) {
+                        eprintln!("sentinel: failed to send message: {}", e);
+                    }
+                }
+                return Ok(());
             }
             StopReason::ToolUse => {
+                // If we streamed partial text, finalize it
+                if let Some(msg_id) = telegram_msg_id {
+                    let text = extract_text(&api_resp.content);
+                    if !text.is_empty() {
+                        let _ = telegram.edit_message_text(chat_id, msg_id, &text);
+                    }
+                }
+
                 // Execute each tool call
                 let mut tool_results = Vec::new();
                 for block in &api_resp.content {
