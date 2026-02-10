@@ -5,6 +5,10 @@ edition = "2021"
 description = "Rust-native AI agent runtime with capability-based security"
 license = "MIT"
 
+[features]
+default = ["tls"]
+tls = ["rustls", "webpki-roots"]
+
 [dependencies]
-rustls = "0.23"
-webpki-roots = "0.26"
+rustls = { version = "0.23", optional = true }
+webpki-roots = { version = "0.26", optional = true }

@@ -1,26 +1,20 @@
-use std::fs;
-use std::io::Read;
-use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant};
-
 use crate::llm::provider::{ContentBlock, ToolDef};
 use crate::net::json::{json_obj, json_arr, JsonValue};
+use crate::platform::{CapType, Platform};
 use crate::security::audit::{AuditEvent, Auditor};
-use crate::security::capability::{CapabilityChecker, CapabilityResult};
 
 // ── Tool executor ───────────────────────────────────────────────────────────
 
 pub struct ToolExecutor<'a> {
-    caps: &'a CapabilityChecker,
-    command_timeout: Duration,
+    platform: &'a dyn Platform,
+    command_timeout: u64,
 }
 
 impl<'a> ToolExecutor<'a> {
-    pub fn new(caps: &'a CapabilityChecker, command_timeout_secs: u64) -> Self {
+    pub fn new(platform: &'a dyn Platform, command_timeout_secs: u64) -> Self {
         ToolExecutor {
-            caps,
-            command_timeout: Duration::from_secs(command_timeout_secs),
+            platform,
+            command_timeout: command_timeout_secs,
         }
     }
 
@@ -172,14 +166,15 @@ impl<'a> ToolExecutor<'a> {
             .and_then(|v| v.as_str())
             .ok_or("missing 'path' parameter")?;
 
-        match self.caps.check_file_read(path) {
-            CapabilityResult::Allowed => {
+        match self.platform.check_capability(CapType::FileRead, path) {
+            Ok(true) => {
                 auditor.log(AuditEvent::ToolCallAllowed {
                     tool: "read_file",
                     params: params_str,
                 });
             }
-            CapabilityResult::Denied(reason) => {
+            Ok(false) => {
+                let reason = format!("read access denied for path '{}'", path);
                 auditor.log(AuditEvent::ToolCallDenied {
                     tool: "read_file",
                     params: params_str,
@@ -187,9 +182,14 @@ impl<'a> ToolExecutor<'a> {
                 });
                 return Err(format!("access denied: {}", reason));
             }
+            Err(e) => {
+                return Err(format!("capability check failed: {}", e));
+            }
         }
 
-        fs::read_to_string(path).map_err(|e| format!("failed to read '{}': {}", path, e))
+        self.platform
+            .read_file(path)
+            .map_err(|e| format!("failed to read '{}': {}", path, e))
     }
 
     fn exec_write_file(
@@ -207,14 +207,15 @@ impl<'a> ToolExecutor<'a> {
             .and_then(|v| v.as_str())
             .ok_or("missing 'content' parameter")?;
 
-        match self.caps.check_file_write(path) {
-            CapabilityResult::Allowed => {
+        match self.platform.check_capability(CapType::FileWrite, path) {
+            Ok(true) => {
                 auditor.log(AuditEvent::ToolCallAllowed {
                     tool: "write_file",
                     params: params_str,
                 });
             }
-            CapabilityResult::Denied(reason) => {
+            Ok(false) => {
+                let reason = format!("write access denied for path '{}'", path);
                 auditor.log(AuditEvent::ToolCallDenied {
                     tool: "write_file",
                     params: params_str,
@@ -222,9 +223,13 @@ impl<'a> ToolExecutor<'a> {
                 });
                 return Err(format!("access denied: {}", reason));
             }
+            Err(e) => {
+                return Err(format!("capability check failed: {}", e));
+            }
         }
 
-        fs::write(path, content)
+        self.platform
+            .write_file(path, content)
             .map(|_| format!("wrote {} bytes to '{}'", content.len(), path))
             .map_err(|e| format!("failed to write '{}': {}", path, e))
     }
@@ -240,14 +245,15 @@ impl<'a> ToolExecutor<'a> {
             .and_then(|v| v.as_str())
             .ok_or("missing 'path' parameter")?;
 
-        match self.caps.check_file_read(path) {
-            CapabilityResult::Allowed => {
+        match self.platform.check_capability(CapType::FileRead, path) {
+            Ok(true) => {
                 auditor.log(AuditEvent::ToolCallAllowed {
                     tool: "list_directory",
                     params: params_str,
                 });
             }
-            CapabilityResult::Denied(reason) => {
+            Ok(false) => {
+                let reason = format!("read access denied for path '{}'", path);
                 auditor.log(AuditEvent::ToolCallDenied {
                     tool: "list_directory",
                     params: params_str,
@@ -255,20 +261,27 @@ impl<'a> ToolExecutor<'a> {
                 });
                 return Err(format!("access denied: {}", reason));
             }
+            Err(e) => {
+                return Err(format!("capability check failed: {}", e));
+            }
         }
 
-        let entries = fs::read_dir(path).map_err(|e| format!("failed to list '{}': {}", path, e))?;
+        let entries = self
+            .platform
+            .list_directory(path)
+            .map_err(|e| format!("failed to list '{}': {}", path, e))?;
 
-        let mut lines = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("error reading entry: {}", e))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            let file_type = entry.file_type().map_err(|e| format!("error: {}", e))?;
-            let suffix = if file_type.is_dir() { "/" } else { "" };
-            lines.push(format!("{}{}", name, suffix));
-        }
+        let lines: Vec<String> = entries
+            .iter()
+            .map(|e| {
+                if e.is_dir {
+                    format!("{}/", e.name)
+                } else {
+                    e.name.clone()
+                }
+            })
+            .collect();
 
-        lines.sort();
         Ok(lines.join("\n"))
     }
 
@@ -283,20 +296,24 @@ impl<'a> ToolExecutor<'a> {
             .and_then(|v| v.as_str())
             .ok_or("missing 'command' parameter")?;
 
-        match self.caps.check_command(command) {
-            CapabilityResult::Allowed => {
+        match self.platform.check_capability(CapType::Command, command) {
+            Ok(true) => {
                 auditor.log(AuditEvent::ToolCallAllowed {
                     tool: "run_command",
                     params: params_str,
                 });
             }
-            CapabilityResult::Denied(reason) => {
+            Ok(false) => {
+                let reason = format!("command '{}' not in allowlist", command);
                 auditor.log(AuditEvent::ToolCallDenied {
                     tool: "run_command",
                     params: params_str,
                     reason: &reason,
                 });
                 return Err(format!("access denied: {}", reason));
+            }
+            Err(e) => {
+                return Err(format!("capability check failed: {}", e));
             }
         }
 
@@ -310,68 +327,29 @@ impl<'a> ToolExecutor<'a> {
             })
             .unwrap_or_default();
 
-        let mut child = Command::new(command)
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to run '{}': {}", command, e))?;
+        let output = self
+            .platform
+            .run_command(command, &args, self.command_timeout)
+            .map_err(|e| format!("{}", e))?;
 
-        let start = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    // Process finished — collect output
-                    let mut stdout_buf = Vec::new();
-                    let mut stderr_buf = Vec::new();
-                    if let Some(ref mut out) = child.stdout {
-                        let _ = out.read_to_end(&mut stdout_buf);
-                    }
-                    if let Some(ref mut err) = child.stderr {
-                        let _ = err.read_to_end(&mut stderr_buf);
-                    }
-
-                    let stdout = String::from_utf8_lossy(&stdout_buf);
-                    let stderr = String::from_utf8_lossy(&stderr_buf);
-
-                    let mut result = String::new();
-                    if !stdout.is_empty() {
-                        result.push_str(&stdout);
-                    }
-                    if !stderr.is_empty() {
-                        if !result.is_empty() {
-                            result.push_str("\n--- stderr ---\n");
-                        }
-                        result.push_str(&stderr);
-                    }
-
-                    if status.success() {
-                        return Ok(result);
-                    } else {
-                        return Err(format!(
-                            "command exited with status {}\n{}",
-                            status.code().unwrap_or(-1),
-                            result
-                        ));
-                    }
-                }
-                Ok(None) => {
-                    // Still running — check timeout
-                    if start.elapsed() >= self.command_timeout {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(format!(
-                            "command '{}' timed out after {}s",
-                            command,
-                            self.command_timeout.as_secs()
-                        ));
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(e) => {
-                    return Err(format!("error waiting for '{}': {}", command, e));
-                }
+        let mut result = String::new();
+        if !output.stdout.is_empty() {
+            result.push_str(&output.stdout);
+        }
+        if !output.stderr.is_empty() {
+            if !result.is_empty() {
+                result.push_str("\n--- stderr ---\n");
             }
+            result.push_str(&output.stderr);
+        }
+
+        if output.exit_code == 0 {
+            Ok(result)
+        } else {
+            Err(format!(
+                "command exited with status {}\n{}",
+                output.exit_code, result
+            ))
         }
     }
 }
@@ -379,8 +357,17 @@ impl<'a> ToolExecutor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::capability::CapabilityChecker;
+    use crate::platform::linux::LinuxPlatform;
     use crate::security::audit::Auditor;
+
+    fn test_platform(read: Vec<&str>, write: Vec<&str>, cmds: Vec<&str>) -> LinuxPlatform {
+        LinuxPlatform::new(
+            read.into_iter().map(String::from).collect(),
+            write.into_iter().map(String::from).collect(),
+            cmds.into_iter().map(String::from).collect(),
+            None,
+        )
+    }
 
     #[test]
     fn test_tool_definitions_count() {
@@ -394,13 +381,9 @@ mod tests {
 
     #[test]
     fn test_command_timeout() {
-        let checker = CapabilityChecker::new(
-            vec![],
-            vec![],
-            vec!["sleep".into()],
-        );
-        let executor = ToolExecutor::new(&checker, 1); // 1 second timeout
-        let mut auditor = Auditor::new(None);
+        let platform = test_platform(vec![], vec![], vec!["sleep"]);
+        let executor = ToolExecutor::new(&platform, 1); // 1 second timeout
+        let mut auditor = Auditor::new(&platform);
 
         let input = json_obj()
             .field_str("command", "sleep")
@@ -419,13 +402,9 @@ mod tests {
 
     #[test]
     fn test_command_success() {
-        let checker = CapabilityChecker::new(
-            vec![],
-            vec![],
-            vec!["echo".into()],
-        );
-        let executor = ToolExecutor::new(&checker, 5);
-        let mut auditor = Auditor::new(None);
+        let platform = test_platform(vec![], vec![], vec!["echo"]);
+        let executor = ToolExecutor::new(&platform, 5);
+        let mut auditor = Auditor::new(&platform);
 
         let input = json_obj()
             .field_str("command", "echo")
@@ -444,13 +423,9 @@ mod tests {
 
     #[test]
     fn test_command_denied() {
-        let checker = CapabilityChecker::new(
-            vec![],
-            vec![],
-            vec!["echo".into()],
-        );
-        let executor = ToolExecutor::new(&checker, 5);
-        let mut auditor = Auditor::new(None);
+        let platform = test_platform(vec![], vec![], vec!["echo"]);
+        let executor = ToolExecutor::new(&platform, 5);
+        let mut auditor = Auditor::new(&platform);
 
         let input = json_obj()
             .field_str("command", "rm")
@@ -468,9 +443,9 @@ mod tests {
 
     #[test]
     fn test_unknown_tool() {
-        let checker = CapabilityChecker::new(vec![], vec![], vec![]);
-        let executor = ToolExecutor::new(&checker, 5);
-        let mut auditor = Auditor::new(None);
+        let platform = test_platform(vec![], vec![], vec![]);
+        let executor = ToolExecutor::new(&platform, 5);
+        let mut auditor = Auditor::new(&platform);
 
         let input = JsonValue::Null;
         let result = executor.execute("test-id", "nonexistent_tool", &input, &mut auditor);
@@ -489,13 +464,9 @@ mod tests {
         let path = "/tmp/sentinel_test_read.txt";
         std::fs::write(path, "test content").unwrap();
 
-        let checker = CapabilityChecker::new(
-            vec!["/tmp".into()],
-            vec![],
-            vec![],
-        );
-        let executor = ToolExecutor::new(&checker, 5);
-        let mut auditor = Auditor::new(None);
+        let platform = test_platform(vec!["/tmp"], vec![], vec![]);
+        let executor = ToolExecutor::new(&platform, 5);
+        let mut auditor = Auditor::new(&platform);
 
         let input = json_obj().field_str("path", path).build();
         let result = executor.execute("test-id", "read_file", &input, &mut auditor);
@@ -514,13 +485,9 @@ mod tests {
     fn test_write_file() {
         let path = "/tmp/sentinel_test_write.txt";
 
-        let checker = CapabilityChecker::new(
-            vec![],
-            vec!["/tmp".into()],
-            vec![],
-        );
-        let executor = ToolExecutor::new(&checker, 5);
-        let mut auditor = Auditor::new(None);
+        let platform = test_platform(vec![], vec!["/tmp"], vec![]);
+        let executor = ToolExecutor::new(&platform, 5);
+        let mut auditor = Auditor::new(&platform);
 
         let input = json_obj()
             .field_str("path", path)
@@ -542,13 +509,9 @@ mod tests {
 
     #[test]
     fn test_list_directory() {
-        let checker = CapabilityChecker::new(
-            vec!["/tmp".into()],
-            vec![],
-            vec![],
-        );
-        let executor = ToolExecutor::new(&checker, 5);
-        let mut auditor = Auditor::new(None);
+        let platform = test_platform(vec!["/tmp"], vec![], vec![]);
+        let executor = ToolExecutor::new(&platform, 5);
+        let mut auditor = Auditor::new(&platform);
 
         let input = json_obj().field_str("path", "/tmp").build();
         let result = executor.execute("test-id", "list_directory", &input, &mut auditor);

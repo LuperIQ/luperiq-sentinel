@@ -1,13 +1,12 @@
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::time::SystemTime;
 
 use crate::net::json::json_obj;
+use crate::platform::Platform;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-pub struct Auditor {
-    log_file: Option<File>,
+pub struct Auditor<'a> {
+    platform: &'a dyn Platform,
 }
 
 #[derive(Debug)]
@@ -21,18 +20,9 @@ pub enum AuditEvent<'a> {
 
 // ── Implementation ──────────────────────────────────────────────────────────
 
-impl Auditor {
-    pub fn new(log_path: Option<&str>) -> Self {
-        let log_file = log_path.and_then(|path| {
-            match OpenOptions::new().create(true).append(true).open(path) {
-                Ok(f) => Some(f),
-                Err(e) => {
-                    eprintln!("sentinel: warning: cannot open audit log '{}': {}", path, e);
-                    None
-                }
-            }
-        });
-        Auditor { log_file }
+impl<'a> Auditor<'a> {
+    pub fn new(platform: &'a dyn Platform) -> Self {
+        Auditor { platform }
     }
 
     pub fn log(&mut self, event: AuditEvent) {
@@ -77,10 +67,9 @@ impl Auditor {
         };
 
         let line = json.to_json_string();
-        eprintln!("audit: {}", line);
 
-        if let Some(ref mut f) = self.log_file {
-            let _ = writeln!(f, "{}", line);
-        }
+        // Delegate to platform — on Linux: eprintln + file append,
+        // on LuperIQ: kernel AuditWrite syscall
+        let _ = self.platform.audit_event(&line);
     }
 }

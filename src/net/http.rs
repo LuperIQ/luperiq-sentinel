@@ -1,21 +1,29 @@
+#[cfg(feature = "tls")]
 use std::cell::RefCell;
 use std::io::{Read, Write};
+#[cfg(feature = "tls")]
 use std::net::TcpStream;
+#[cfg(feature = "tls")]
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "tls")]
 use rustls::pki_types::ServerName;
+#[cfg(feature = "tls")]
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "tls")]
 type TlsStream = StreamOwned<ClientConnection, TcpStream>;
 
+#[cfg(feature = "tls")]
 pub struct HttpClient {
     tls_config: Arc<ClientConfig>,
     cached_conn: RefCell<Option<CachedConn>>,
 }
 
+#[cfg(feature = "tls")]
 struct CachedConn {
     host_port: String,
     stream: TlsStream,
@@ -102,8 +110,9 @@ fn parse_url(url: &str) -> Result<ParsedUrl, HttpError> {
     })
 }
 
-// ── HttpClient ──────────────────────────────────────────────────────────────
+// ── HttpClient (TLS-based, Linux) ──────────────────────────────────────────
 
+#[cfg(feature = "tls")]
 impl HttpClient {
     pub fn new() -> Result<Self, HttpError> {
         let mut root_store = RootCertStore::empty();
@@ -240,6 +249,7 @@ impl HttpClient {
 
 // ── Stream-based response reading (keep-alive safe) ─────────────────────────
 
+#[cfg(feature = "tls")]
 fn read_response_from_stream(stream: &mut TlsStream) -> Result<HttpResponse, HttpError> {
     // Read headers byte-by-byte until \r\n\r\n
     let mut header_buf = Vec::with_capacity(4096);
@@ -323,6 +333,7 @@ fn read_response_from_stream(stream: &mut TlsStream) -> Result<HttpResponse, Htt
     })
 }
 
+#[cfg(feature = "tls")]
 fn read_chunked_from_stream(stream: &mut TlsStream) -> Result<Vec<u8>, HttpError> {
     let mut result = Vec::new();
     loop {
@@ -361,12 +372,14 @@ fn read_chunked_from_stream(stream: &mut TlsStream) -> Result<Vec<u8>, HttpError
 
 // ── Streaming response ──────────────────────────────────────────────────────
 
+#[cfg(feature = "tls")]
 pub struct StreamingResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     stream: TlsStream,
 }
 
+#[cfg(feature = "tls")]
 impl StreamingResponse {
     /// Read a single line (up to \n). Returns empty string on EOF.
     pub fn read_line(&mut self) -> Result<String, HttpError> {
@@ -395,6 +408,7 @@ impl StreamingResponse {
     }
 }
 
+#[cfg(feature = "tls")]
 impl HttpClient {
     /// Send a POST request and return a streaming response (for SSE).
     /// The caller reads the body incrementally via StreamingResponse::read_line.
