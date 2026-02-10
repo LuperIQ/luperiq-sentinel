@@ -2,49 +2,46 @@
 
 **Secure AI Agent Runtime — Built from Scratch in Rust**
 
-LuperIQ Sentinel is a Rust-native AI agent runtime that connects Claude to Telegram with capability-based security. It replaces the Node.js/Chromium stack used by projects like OpenClaw with ~2,700 lines of Rust and only 2 crate dependencies. When running on [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os), the kernel enforces security boundaries that software alone cannot.
+LuperIQ Sentinel is a Rust-native AI agent runtime that connects LLMs to messaging platforms with capability-based security. It replaces the Node.js/Chromium stack used by projects like OpenClaw with ~3,500 lines of Rust and only 2 crate dependencies. When running on [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os), the kernel enforces security boundaries that software alone cannot.
 
-## Current Status: MVP Working
+## Current Status: v0.2.0 — Full-Featured Agent Runtime
 
-The MVP is implemented and compiles. It connects to Claude via the Anthropic Messages API, communicates with users via Telegram Bot API, and executes tools (file read/write, directory listing, command execution) with capability-checked security boundaries and JSON-line audit logging.
+The agent runtime is fully functional with multi-provider LLM support, multi-platform messaging, Linux sandboxing, and a skill/plugin system. ~3,500 lines of Rust, 29 source files, 63 tests.
 
 ```
 cargo build    # compiles clean
-cargo test     # 12 tests pass
-cargo run      # starts polling Telegram
+cargo test     # 63 tests pass
+cargo run      # starts polling configured messaging platforms
 ```
 
-### What's Built (v0.1.0)
+### What's Built
 
-| Component | Status | Lines |
-|-----------|--------|-------|
-| JSON parser/serializer | Done | 681 |
-| HTTPS client (rustls) | Done | 345 |
-| Anthropic Messages API client | Done | 318 |
-| Telegram Bot API client | Done | 201 |
-| TOML config loader | Done | 317 |
-| Capability checker (path/command allowlists) | Done | 143 |
-| Audit logger (JSON-line) | Done | 86 |
-| Tool executor (4 tools) | Done | 335 |
-| Main agent loop | Done | 228 |
-| **Total** | **Working MVP** | **~2,700** |
-
-### What's Next
-
-See [STATUS.md](STATUS.md) for the full development roadmap. The short version:
-
-| Priority | Feature | Effort | Status |
-|----------|---------|--------|--------|
-| 1 | Streaming responses (SSE) | Medium | Not started |
-| 2 | Discord connector | Medium | Not started |
-| 3 | Slack connector | Medium | Not started |
-| 4 | OpenAI/GPT provider | Small | Not started |
-| 5 | WebSocket control plane | Medium | Not started |
-| 6 | seccomp/landlock sandboxing (Linux) | Large | Not started |
-| 7 | LuperIQ Agent OS capability integration | Large | Not started |
-| 8 | Skill/plugin system | Large | Not started |
-| 9 | Signal connector | Medium | Not started |
-| 10 | Web-based permission dashboard | Large | Not started |
+| Component | Status | Description |
+|-----------|--------|-------------|
+| JSON parser/serializer | Done | Recursive descent, builder pattern, unicode escapes |
+| HTTPS client (rustls) | Done | HTTP/1.1, keep-alive, TLS stream caching, chunked encoding |
+| SSE parser | Done | Server-Sent Events for streaming responses |
+| Anthropic Messages API | Done | Streaming (SSE), tool use, content blocks |
+| OpenAI-compatible API | Done | Chat Completions, tool calls, works with Ollama/vLLM/LM Studio |
+| LLM Provider trait | Done | Common interface for any LLM backend |
+| Telegram connector | Done | Long polling, message editing for streaming, 4096-char split |
+| Discord connector | Done | REST API v10 polling, rate limiting, 2000-char split |
+| Slack connector | Done | Web API polling, bot detection, chronological ordering |
+| Connector trait | Done | Common interface for all messaging platforms |
+| Multi-connector support | Done | Round-robin polling, per-platform auth, conversation keying |
+| TOML config loader | Done | Parser + env var fallback, section/array support |
+| Capability checker | Done | Path canonicalization, prefix matching, command allowlists |
+| Audit logger (JSON-line) | Done | Events to stderr + optional file |
+| Tool executor (4 tools) | Done | read_file, write_file, list_directory, run_command (with timeout) |
+| seccomp BPF sandbox | Done | ~80 syscall allowlist, architecture verification |
+| Landlock filesystem rules | Done | Read/write/execute path restrictions (Linux 5.13+) |
+| Skill manifest parser | Done | skill.toml with capabilities + parameters |
+| Skill loader | Done | Directory-based discovery and validation |
+| Skill sandbox | Done | Fork subprocess, env_clear, piped stdio, Drop cleanup |
+| Skill IPC | Done | JSON-line stdin/stdout with timeout + kill |
+| Platform abstraction | Done | Linux (std) and LuperIQ OS (kernel syscall) backends |
+| App orchestrator | Done | Multi-connector agent loop with conversation management |
+| **Total** | **~3,500 lines** | **29 files, 63 tests, 2 dependencies** |
 
 ## Why This Exists
 
@@ -75,25 +72,27 @@ We looked at OpenClaw's codebase to understand the bloat:
 | Image assets | 15 MB | App icons, DMG backgrounds, screenshots |
 | **Total** | **57 MB** | **Before `npm install` adds node_modules** |
 
-### Sentinel: 144KB, 2,700 Lines, 14 Files
+### Sentinel: ~3,500 Lines, 29 Files
 
 | | OpenClaw | Sentinel |
 |---|---|---|
 | Language | TypeScript | Rust |
-| Source lines | 136,689 | 2,661 |
-| Source files | 2,631 | 14 |
-| Source size on disk | 57 MB | 144 KB |
+| Source lines | 136,689 | ~3,500 |
+| Source files | 2,631 | 29 |
+| Source size on disk | 57 MB | ~200 KB |
 | Runtime dependencies | 1,200+ npm packages | 2 crates (rustls, webpki-roots) |
 | Memory at runtime | 300 MB - 2 GB | ~20 MB |
 | Binary size | ~200 MB (node + deps) | ~5 MB |
-| Platforms | Desktop, iOS, macOS, CLI | CLI (Linux first) |
-| Messaging | Telegram, Discord, Slack, Web, browser | Telegram (MVP) |
-| Security model | Docker (opt-in, already bypassed) | Capability allowlists (mandatory) |
+| Platforms | Desktop, iOS, macOS, CLI | CLI (Linux, LuperIQ OS) |
+| LLM providers | OpenAI, Anthropic, etc. | Anthropic + OpenAI-compatible (Ollama, vLLM, LM Studio) |
+| Messaging | Telegram, Discord, Slack, Web, browser | Telegram, Discord, Slack |
+| Security model | Docker (opt-in, already bypassed) | seccomp + Landlock (Linux), kernel capabilities (LuperIQ OS) |
 | JSON | V8 built-in | From-scratch parser (681 lines) |
-| HTTP/TLS | Node.js + OpenSSL | From-scratch HTTP + rustls |
-| Config | YAML + many npm packages | From-scratch TOML parser (100 lines) |
+| HTTP/TLS | Node.js + OpenSSL | From-scratch HTTP + rustls, connection pooling |
+| Config | YAML + many npm packages | From-scratch TOML parser (~100 lines) |
+| Plugins | ClawHub marketplace (341 malicious skills found) | Sandboxed subprocess IPC with declared capabilities |
 
-Sentinel is **~400x smaller** because it does one thing well (connect an LLM to messaging with security) instead of trying to be a full-stack multi-platform application with a marketplace, browser automation, and desktop apps.
+Sentinel is **~40x smaller** because it does one thing well (connect an LLM to messaging with security) instead of trying to be a full-stack multi-platform application with a marketplace, browser automation, and desktop apps.
 
 The point is not that OpenClaw is bad software. It does a lot. The point is that **for running an AI agent securely, most of that isn't necessary**, and every line of code is attack surface.
 
@@ -102,8 +101,8 @@ The point is not that OpenClaw is bad software. It does a lot. The point is that
 ### Prerequisites
 
 - Rust (stable, 2021 edition)
-- An Anthropic API key
-- A Telegram bot token (from [@BotFather](https://t.me/BotFather))
+- At least one LLM API key (Anthropic, OpenAI, or compatible)
+- At least one messaging platform token (Telegram, Discord, or Slack)
 
 ### Build and Run
 
@@ -144,20 +143,38 @@ Any attempt to access paths or commands outside the allowlist is denied and logg
 
 ```
 src/
-├── main.rs              # Entry point, agent loop, conversation management
+├── main.rs              # Entry point
+├── app.rs               # Multi-connector agent loop, conversation management
 ├── config.rs            # TOML parser + env var config loading
 ├── net/
 │   ├── json.rs          # JSON parser/serializer (recursive descent, builder pattern)
-│   └── http.rs          # HTTPS client over rustls (TLS 1.3)
+│   ├── http.rs          # HTTPS client, keep-alive connection pooling
+│   └── sse.rs           # Server-Sent Events parser (streaming responses)
 ├── llm/
-│   └── anthropic.rs     # Anthropic Messages API (tool use, content blocks)
+│   ├── provider.rs      # LlmProvider trait + shared types
+│   ├── anthropic.rs     # Anthropic Messages API (streaming, tool use)
+│   └── openai.rs        # OpenAI Chat Completions (compatible with Ollama/vLLM)
 ├── messaging/
-│   └── telegram.rs      # Telegram Bot API (long polling, message splitting)
+│   ├── mod.rs           # Connector trait, IncomingMessage, ConnectorError
+│   ├── telegram.rs      # Telegram Bot API (long polling, live editing)
+│   ├── discord.rs       # Discord REST API v10 (polling, rate limiting)
+│   └── slack.rs         # Slack Web API (polling, bot detection)
 ├── agent/
-│   └── tools.rs         # Tool definitions + execution (4 tools)
-└── security/
-    ├── capability.rs    # Path/command allowlist with canonicalization
-    └── audit.rs         # JSON-line audit logging to stderr + file
+│   └── tools.rs         # Tool definitions + execution (4 tools, configurable timeout)
+├── platform/
+│   ├── mod.rs           # Platform trait (8 operations)
+│   ├── linux.rs         # Linux backend (std::fs, std::process, std::net)
+│   └── luperiq.rs       # LuperIQ OS backend (kernel syscalls)
+├── security/
+│   ├── capability.rs    # Path/command allowlist with canonicalization
+│   ├── audit.rs         # JSON-line audit logging to stderr + file
+│   └── linux.rs         # seccomp BPF + Landlock filesystem rules
+└── skills/
+    ├── mod.rs           # SkillRunner (load, execute, merge tool definitions)
+    ├── manifest.rs      # skill.toml parser (capabilities + parameters)
+    ├── loader.rs        # Directory-based skill discovery
+    ├── sandbox.rs       # Forked subprocess with env_clear, piped stdio
+    └── ipc.rs           # JSON-line stdin/stdout communication
 ```
 
 ### How the Agent Loop Works
@@ -196,14 +213,14 @@ On [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os) (future), the
 
 Sentinel on Linux is step one. The full security story requires [LuperIQ Agent OS](https://github.com/LuperIQ/luperiq-agent-os):
 
-| Layer | Linux (current) | LuperIQ OS (planned) |
+| Layer | Linux (current) | LuperIQ OS (working) |
 |-------|----------------|---------------------|
-| Capability enforcement | Application-level allowlists | Kernel-enforced handle tables |
-| Audit log | File-based (agent-managed) | Kernel-managed (immutable) |
-| Skill sandboxing | Not yet implemented | Separate processes with restricted handle tables |
-| Network isolation | Not yet implemented | Per-host capability handles |
-| Config protection | File permissions | Capability-gated writes |
-| Approval UI | Not yet implemented | Native OS dialog |
+| Capability enforcement | seccomp + Landlock + application allowlists | Kernel-enforced handle tables (FilePolicy, SpawnPolicy per Job) |
+| Audit log | File-based (agent-managed, append-only via Landlock) | Kernel-managed (immutable, SHA-256 hash chain) |
+| Skill sandboxing | Forked subprocess, inherits seccomp/Landlock | Separate processes with restricted handle tables |
+| Network isolation | Landlock path rules | Per-host capability handles |
+| Config protection | File permissions + Landlock | Capability-gated writes |
+| Approval UI | Config-driven auto-approve/deny | Web management UI (dashboard, capability manager, audit viewer) |
 
 ### The Agent Appliance
 
@@ -232,18 +249,18 @@ The end goal: a Raspberry Pi 5 on your desk running LuperIQ Agent OS with Sentin
 
 Good first issues:
 
-- **Add an OpenAI/GPT provider** — `src/llm/openai.rs`, similar structure to `anthropic.rs`
-- **Add streaming support** — Parse SSE events from Claude's streaming API
-- **Add Discord connector** — `src/messaging/discord.rs`, Discord Gateway + REST API
+- **Signal connector** — `src/messaging/signal.rs`, Signal CLI bridge via JSON-RPC
+- **Matrix connector** — `src/messaging/matrix.rs`, Matrix client-server API
 - **Improve error messages** — Better user-facing errors when config is wrong
-- **Add more tests** — JSON parser edge cases, config parsing, capability checks
+- **Config validation** — Warn about common misconfigurations
+- **More tests** — Edge cases in skills, platform abstraction, multi-connector scenarios
 
 Bigger projects:
 
-- **seccomp/landlock sandboxing** — Linux-level process isolation
 - **WebSocket control plane** — OpenClaw protocol compatibility
-- **Skill/plugin system** — Run third-party tools in sandboxed subprocesses
-- **LuperIQ Agent OS integration** — Wire up kernel capability handles
+- **Web-based permission dashboard** — Approve/deny capabilities from a browser
+- **Streaming for Discord/Slack** — Live message editing as tokens arrive (already works for Telegram)
+- **Conversation persistence** — Save/load conversation history across restarts
 
 ## Disclaimer
 

@@ -2,12 +2,12 @@
 
 ## Overview
 
-Sentinel is being built incrementally. The MVP is a working Claude-to-Telegram agent with capability-checked tool execution. Each phase adds a new capability while keeping the codebase small and auditable.
+Sentinel is built incrementally. Each phase adds a new capability while keeping the codebase small and auditable.
 
-**Current version:** 0.1.0 (February 2026)
-**Total source:** ~2,700 lines of Rust across 14 files
+**Current version:** 0.2.0 (February 2026)
+**Total source:** ~3,500 lines of Rust across 29 files
 **Dependencies:** 2 crates (rustls 0.23, webpki-roots 0.26)
-**Tests:** 12 passing
+**Tests:** 63 passing
 
 ---
 
@@ -41,45 +41,36 @@ The core agent loop works end to end.
 
 ### Known Limitations
 
-- No streaming (responses arrive all at once after Claude finishes)
-- Only Anthropic/Claude — no OpenAI, no other providers
-- Only Telegram — no Discord, Slack, Signal, or WebSocket
-- No Linux-level sandboxing (seccomp, landlock, namespaces)
-- No skill/plugin system
-- No web dashboard
-- run_command has no timeout (a long-running command will block)
-- No connection pooling (new TLS connection per request)
+- No WebSocket control plane (OpenClaw protocol compatibility)
+- No web-based permission dashboard
+- No Signal or Matrix connectors
+- Streaming only for Telegram (Discord/Slack get full responses)
+- No conversation persistence across restarts
+- Skill system requires external binaries (no dynamic loading)
 
 ---
 
-## Phase 2: Streaming and Multi-Provider (Not Started)
+## Phase 2: Streaming and Multi-Provider (Complete)
 
 **Goal:** Real-time token streaming and support for multiple LLM providers.
 
-| Task | File | Effort | Description |
-|------|------|--------|-------------|
-| SSE parser | `src/net/sse.rs` | ~150 lines | Parse `text/event-stream` for Claude streaming |
-| Streaming Anthropic | `src/llm/anthropic.rs` | Modify | Use `stream: true`, parse delta events |
-| OpenAI provider | `src/llm/openai.rs` | ~250 lines | Chat Completions API, tool calls, streaming |
-| Provider trait | `src/llm/mod.rs` | ~50 lines | Common trait for LLM providers |
-| Command timeout | `src/agent/tools.rs` | Modify | Kill subprocess after configurable timeout |
-
-**Why this matters:** Streaming makes the bot feel responsive — users see tokens arrive in real-time instead of waiting 10-30 seconds for a complete response. Multi-provider lets users choose their LLM.
+- [x] SSE parser (`src/net/sse.rs`) — Server-Sent Events for streaming
+- [x] Streaming Anthropic — `stream: true`, live Telegram message editing (500ms throttle)
+- [x] OpenAI provider (`src/llm/openai.rs`) — Chat Completions API, tool calls
+- [x] LlmProvider trait (`src/llm/provider.rs`) — Common interface with `send_streaming()` default
+- [x] Command timeout — Kill subprocess after configurable timeout (default 30s)
+- [x] Connection pooling — HTTP/1.1 keep-alive, TLS stream caching per host
 
 ---
 
-## Phase 3: More Messaging Platforms (Not Started)
+## Phase 3: More Messaging Platforms (Complete)
 
 **Goal:** Discord and Slack connectors.
 
-| Task | File | Effort | Description |
-|------|------|--------|-------------|
-| Discord connector | `src/messaging/discord.rs` | ~300 lines | Gateway WebSocket + REST API, slash commands |
-| Slack connector | `src/messaging/slack.rs` | ~250 lines | Web API + Events API (or Socket Mode) |
-| Connector trait | `src/messaging/mod.rs` | ~50 lines | Common trait for messaging platforms |
-| Signal connector | `src/messaging/signal.rs` | ~200 lines | Signal CLI bridge via JSON-RPC |
-
-**Why this matters:** Most teams use Discord or Slack. Supporting them makes Sentinel useful to a much wider audience.
+- [x] Discord connector (`src/messaging/discord.rs`) — REST API v10 polling, rate limiting, 2000-char split
+- [x] Slack connector (`src/messaging/slack.rs`) — Web API polling, bot detection, chronological ordering
+- [x] Connector trait (`src/messaging/mod.rs`) — 5 methods: poll, send, send_get_id, edit, platform_name
+- [x] Multi-connector support (`src/app.rs`) — Round-robin polling, per-platform auth, conversation keying
 
 ---
 
@@ -93,51 +84,40 @@ The core agent loop works end to end.
 | Control server | `src/net/ws_server.rs` | ~200 lines | Accept connections on localhost, handle upgrade |
 | Protocol handler | `src/messaging/websocket.rs` | ~250 lines | OpenClaw message format, state sync |
 
-**Why this matters:** Existing OpenClaw management dashboards and tools can connect to Sentinel without modification.
-
 ---
 
-## Phase 5: Linux Sandboxing (Not Started)
+## Phase 5: Linux Sandboxing (Complete)
 
 **Goal:** OS-level process isolation on Linux.
 
-| Task | File | Effort | Description |
-|------|------|--------|-------------|
-| seccomp filters | `src/security/linux.rs` | ~200 lines | Restrict available syscalls |
-| Landlock rules | `src/security/linux.rs` | ~150 lines | Filesystem access restrictions (Linux 5.13+) |
-| Sandbox wrapper | `src/security/sandbox.rs` | ~100 lines | Apply seccomp + landlock before entering main loop |
-
-**Why this matters:** Application-level capability checks can be bypassed if there's a bug in Sentinel. seccomp/landlock are kernel-enforced and cannot be bypassed from userspace.
+- [x] seccomp BPF (`src/security/linux.rs`) — ~80 syscall allowlist, x86_64 architecture check, default DENY with EPERM
+- [x] Landlock rules (`src/security/linux.rs`) — Read/write/execute path restrictions (Linux 5.13+), system paths (/etc/ssl, /proc/self)
+- [x] Enabled by default — `--no-sandbox` to disable, graceful degradation on unsupported kernels
 
 ---
 
-## Phase 6: Skill/Plugin System (Not Started)
+## Phase 6: Skill/Plugin System (Complete)
 
 **Goal:** Run third-party tools in sandboxed subprocesses.
 
-| Task | File | Effort | Description |
-|------|------|--------|-------------|
-| Skill manifest | `src/skills/manifest.rs` | ~100 lines | Parse skill.toml declaring required capabilities |
-| Skill loader | `src/skills/loader.rs` | ~150 lines | Discover and load skills from directory |
-| Skill sandbox | `src/skills/sandbox.rs` | ~200 lines | Fork subprocess with restricted capabilities |
-| IPC channel | `src/skills/ipc.rs` | ~150 lines | JSON-line communication with skill process |
-
-**Why this matters:** Skills are how agents become useful — web search, code execution, database queries. The plugin system lets third parties add capabilities without modifying Sentinel's core.
+- [x] Skill manifest (`src/skills/manifest.rs`) — skill.toml parser with capabilities + parameters
+- [x] Skill loader (`src/skills/loader.rs`) — Directory-based discovery, manifest validation
+- [x] Skill sandbox (`src/skills/sandbox.rs`) — Forked subprocess, env_clear, piped stdio, Drop cleanup
+- [x] IPC channel (`src/skills/ipc.rs`) — JSON-line stdin/stdout with timeout + kill
+- [x] SkillRunner (`src/skills/mod.rs`) — Orchestrates loader/sandbox/IPC, merges tool definitions with built-in tools
 
 ---
 
-## Phase 7: LuperIQ OS Integration (Not Started)
+## Phase 7: LuperIQ OS Integration (Complete)
 
 **Goal:** Wire up kernel capability handles for hard security enforcement.
 
-| Task | File | Effort | Description |
-|------|------|--------|-------------|
-| Capability syscalls | `src/security/luperiq.rs` | ~200 lines | Interface to LuperIQ kernel capability system |
-| Handle management | `src/security/capability.rs` | Modify | Use kernel handles instead of application-level checks |
-| Audit integration | `src/security/audit.rs` | Modify | Delegate to kernel audit log |
-| OS detection | `src/security/mod.rs` | ~50 lines | Detect LuperIQ vs Linux, select security backend |
-
-**Why this matters:** This is the whole point. On LuperIQ OS, the agent process literally cannot access resources outside its capability set. No application bug can bypass kernel enforcement.
+- [x] Platform abstraction (`src/platform/mod.rs`) — Platform trait with 8 operations
+- [x] Linux backend (`src/platform/linux.rs`) — std::fs, std::process, std::net
+- [x] LuperIQ OS backend (`src/platform/luperiq.rs`) — Kernel syscall interface
+- [x] Sentinel runs as 87KB no_std binary on LuperIQ Agent OS
+- [x] Full agent loop on kernel: config, Telegram polling, Claude API, tool execution
+- [x] Kernel-enforced FilePolicy and SpawnPolicy per Job
 
 ---
 
