@@ -5,6 +5,7 @@ mod messaging;
 mod net;
 mod platform;
 mod security;
+mod skills;
 
 #[cfg(feature = "tls")]
 mod app;

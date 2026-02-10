@@ -14,6 +14,7 @@ use crate::messaging::telegram::TelegramClient;
 use crate::net::http::HttpClient;
 use crate::platform::linux::LinuxPlatform;
 use crate::security::audit::{AuditEvent, Auditor};
+use crate::skills::SkillRunner;
 
 const MAX_TOOL_ROUNDS: usize = 10;
 const MAX_HISTORY_MESSAGES: usize = 40;
@@ -90,8 +91,21 @@ pub fn run() {
         }
     };
 
-    let tool_defs = ToolExecutor::tool_definitions();
-    let tool_executor = ToolExecutor::new(&platform, config.command_timeout);
+    let mut tool_defs = ToolExecutor::tool_definitions();
+    let skill_runner = config.skills_dir.as_ref().map(|dir| {
+        SkillRunner::load(dir, config.command_timeout)
+    });
+    let tool_executor = {
+        let exec = ToolExecutor::new(&platform, config.command_timeout);
+        if let Some(ref runner) = skill_runner {
+            if runner.has_skills() {
+                tool_defs.extend(runner.tool_definitions());
+            }
+            exec.with_skills(runner)
+        } else {
+            exec
+        }
+    };
 
     // Build connectors based on config
     let mut connectors: Vec<Box<dyn Connector>> = Vec::new();

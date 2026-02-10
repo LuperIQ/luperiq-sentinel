@@ -2,12 +2,14 @@ use crate::llm::provider::{ContentBlock, ToolDef};
 use crate::net::json::{json_obj, json_arr, JsonValue};
 use crate::platform::{CapType, Platform};
 use crate::security::audit::{AuditEvent, Auditor};
+use crate::skills::SkillRunner;
 
 // ── Tool executor ───────────────────────────────────────────────────────────
 
 pub struct ToolExecutor<'a> {
     platform: &'a dyn Platform,
     command_timeout: u64,
+    skill_runner: Option<&'a SkillRunner>,
 }
 
 impl<'a> ToolExecutor<'a> {
@@ -15,7 +17,13 @@ impl<'a> ToolExecutor<'a> {
         ToolExecutor {
             platform,
             command_timeout: command_timeout_secs,
+            skill_runner: None,
         }
+    }
+
+    pub fn with_skills(mut self, runner: &'a SkillRunner) -> Self {
+        self.skill_runner = Some(runner);
+        self
     }
 
     pub fn tool_definitions() -> Vec<ToolDef> {
@@ -138,7 +146,26 @@ impl<'a> ToolExecutor<'a> {
             "write_file" => self.exec_write_file(input, auditor, &params_str),
             "list_directory" => self.exec_list_directory(input, auditor, &params_str),
             "run_command" => self.exec_run_command(input, auditor, &params_str),
-            _ => Err(format!("unknown tool: {}", name)),
+            _ => {
+                // Check if a loaded skill handles this tool
+                if let Some(runner) = self.skill_runner {
+                    if runner.handles(name) {
+                        return match runner.execute(name, input, auditor) {
+                            Ok(output) => ContentBlock::ToolResult {
+                                tool_use_id: tool_use_id.to_string(),
+                                content: output,
+                                is_error: false,
+                            },
+                            Err(err) => ContentBlock::ToolResult {
+                                tool_use_id: tool_use_id.to_string(),
+                                content: err,
+                                is_error: true,
+                            },
+                        };
+                    }
+                }
+                Err(format!("unknown tool: {}", name))
+            }
         };
 
         match result {

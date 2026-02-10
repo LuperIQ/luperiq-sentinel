@@ -29,6 +29,7 @@ pub struct Config {
     pub command_timeout: u64,
     pub audit_log_path: Option<String>,
     pub sandbox: bool,
+    pub skills_dir: Option<String>,
 }
 
 #[derive(Debug)]
@@ -161,6 +162,8 @@ impl Config {
 
         let audit_log_path = get_str("security", "audit_log_path", "SENTINEL_AUDIT_LOG");
 
+        let skills_dir = get_str("skills", "directory", "SENTINEL_SKILLS_DIR");
+
         // Sandbox: enabled by default, disable with --no-sandbox or SENTINEL_SANDBOX=false
         let sandbox = if std::env::args().any(|a| a == "--no-sandbox") {
             false
@@ -191,6 +194,7 @@ impl Config {
             command_timeout,
             audit_log_path,
             sandbox,
+            skills_dir,
         })
     }
 }
@@ -210,11 +214,11 @@ fn resolve_secret(toml: &Option<TomlDoc>, section: &str, env_key_field: &str, fa
 
 // ── Minimal TOML parser ─────────────────────────────────────────────────────
 
-struct TomlDoc {
-    sections: HashMap<String, HashMap<String, TomlValue>>,
+pub(crate) struct TomlDoc {
+    pub(crate) sections: HashMap<String, HashMap<String, TomlValue>>,
 }
 
-enum TomlValue {
+pub(crate) enum TomlValue {
     Str(String),
     Int(i64),
     StrList(Vec<String>),
@@ -222,7 +226,7 @@ enum TomlValue {
 }
 
 impl TomlDoc {
-    fn get_str(&self, section: &str, key: &str) -> Option<String> {
+    pub(crate) fn get_str(&self, section: &str, key: &str) -> Option<String> {
         match self.sections.get(section)?.get(key)? {
             TomlValue::Str(s) => Some(s.clone()),
             TomlValue::Int(n) => Some(n.to_string()),
@@ -230,14 +234,14 @@ impl TomlDoc {
         }
     }
 
-    fn get_str_list(&self, section: &str, key: &str) -> Option<Vec<String>> {
+    pub(crate) fn get_str_list(&self, section: &str, key: &str) -> Option<Vec<String>> {
         match self.sections.get(section)?.get(key)? {
             TomlValue::StrList(v) => Some(v.clone()),
             _ => None,
         }
     }
 
-    fn get_i64_list(&self, section: &str, key: &str) -> Option<Vec<i64>> {
+    pub(crate) fn get_i64_list(&self, section: &str, key: &str) -> Option<Vec<i64>> {
         match self.sections.get(section)?.get(key)? {
             TomlValue::IntList(v) => Some(v.clone()),
             _ => None,
@@ -260,7 +264,7 @@ fn try_load_toml() -> Option<TomlDoc> {
     None
 }
 
-fn parse_toml(input: &str) -> Result<TomlDoc, String> {
+pub(crate) fn parse_toml(input: &str) -> Result<TomlDoc, String> {
     let mut sections: HashMap<String, HashMap<String, TomlValue>> = HashMap::new();
     let mut current_section = String::new();
 
