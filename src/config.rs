@@ -18,6 +18,7 @@ pub struct Config {
     pub allowed_commands: Vec<String>,
     pub command_timeout: u64,
     pub audit_log_path: Option<String>,
+    pub sandbox: bool,
 }
 
 #[derive(Debug)]
@@ -130,6 +131,15 @@ impl Config {
 
         let audit_log_path = get_str("security", "audit_log_path", "SENTINEL_AUDIT_LOG");
 
+        // Sandbox: enabled by default, disable with --no-sandbox or SENTINEL_SANDBOX=false
+        let sandbox = if std::env::args().any(|a| a == "--no-sandbox") {
+            false
+        } else {
+            get_str("security", "sandbox", "SENTINEL_SANDBOX")
+                .map(|v| v != "false" && v != "0")
+                .unwrap_or(true) // enabled by default
+        };
+
         Ok(Config {
             provider,
             api_key,
@@ -144,6 +154,7 @@ impl Config {
             allowed_commands,
             command_timeout,
             audit_log_path,
+            sandbox,
         })
     }
 }

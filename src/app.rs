@@ -31,6 +31,23 @@ pub fn run() {
         config.audit_log_path.as_deref(),
     );
 
+    // Apply OS-level sandboxing (seccomp + landlock)
+    #[cfg(target_os = "linux")]
+    if config.sandbox {
+        let result = crate::security::linux::apply_sandbox(
+            &config.allowed_read_paths,
+            &config.allowed_write_paths,
+            true,  // enable seccomp
+            true,  // enable landlock
+        );
+        if result.seccomp_applied || result.landlock_applied {
+            eprintln!("sentinel: sandbox active (seccomp={}, landlock={})",
+                result.seccomp_applied, result.landlock_applied);
+        }
+    } else {
+        eprintln!("sentinel: sandbox disabled (--no-sandbox)");
+    }
+
     let mut auditor = Auditor::new(&platform);
 
     let http = match HttpClient::new() {
