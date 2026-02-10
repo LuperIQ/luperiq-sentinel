@@ -11,8 +11,18 @@ pub struct Config {
     pub max_tokens: u32,
     pub openai_base_url: String,
     pub system_prompt: Option<String>,
-    pub telegram_token: String,
+    // Telegram
+    pub telegram_token: Option<String>,
     pub telegram_allowed_users: Vec<i64>,
+    // Discord
+    pub discord_token: Option<String>,
+    pub discord_channel_ids: Vec<String>,
+    pub discord_allowed_users: Vec<String>,
+    // Slack
+    pub slack_bot_token: Option<String>,
+    pub slack_channel_ids: Vec<String>,
+    pub slack_allowed_users: Vec<String>,
+    // Security
     pub allowed_read_paths: Vec<String>,
     pub allowed_write_paths: Vec<String>,
     pub allowed_commands: Vec<String>,
@@ -93,8 +103,28 @@ impl Config {
                 .ok_or_else(|| ConfigError("ANTHROPIC_API_KEY not set".into()))?
         };
 
-        let telegram_token = resolve_secret(&toml, "telegram", "token_env", "TELEGRAM_BOT_TOKEN")
-            .ok_or_else(|| ConfigError("TELEGRAM_BOT_TOKEN not set".into()))?;
+        let telegram_token = resolve_secret(&toml, "telegram", "token_env", "TELEGRAM_BOT_TOKEN");
+
+        // Discord config
+        let discord_token = resolve_secret(&toml, "discord", "token_env", "DISCORD_BOT_TOKEN");
+        let discord_channel_ids =
+            get_str_list("discord", "channel_ids", "DISCORD_CHANNEL_IDS");
+        let discord_allowed_users =
+            get_str_list("discord", "allowed_users", "DISCORD_ALLOWED_USERS");
+
+        // Slack config
+        let slack_bot_token = resolve_secret(&toml, "slack", "bot_token_env", "SLACK_BOT_TOKEN");
+        let slack_channel_ids =
+            get_str_list("slack", "channel_ids", "SLACK_CHANNEL_IDS");
+        let slack_allowed_users =
+            get_str_list("slack", "allowed_users", "SLACK_ALLOWED_USERS");
+
+        // At least one messaging platform must be configured
+        if telegram_token.is_none() && discord_token.is_none() && slack_bot_token.is_none() {
+            return Err(ConfigError(
+                "No messaging platform configured. Set TELEGRAM_BOT_TOKEN, DISCORD_BOT_TOKEN, or SLACK_BOT_TOKEN".into(),
+            ));
+        }
 
         let default_model = if provider == "openai" {
             "gpt-4o".to_string()
@@ -149,6 +179,12 @@ impl Config {
             system_prompt,
             telegram_token,
             telegram_allowed_users,
+            discord_token,
+            discord_channel_ids,
+            discord_allowed_users,
+            slack_bot_token,
+            slack_channel_ids,
+            slack_allowed_users,
             allowed_read_paths,
             allowed_write_paths,
             allowed_commands,

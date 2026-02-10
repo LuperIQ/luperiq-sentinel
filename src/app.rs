@@ -7,6 +7,9 @@ use crate::config::Config;
 use crate::llm::anthropic::AnthropicClient;
 use crate::llm::openai::OpenAiClient;
 use crate::llm::provider::{ContentBlock, LlmError, LlmProvider, Message, Role, StopReason, ToolDef};
+use crate::messaging::Connector;
+use crate::messaging::discord::DiscordConnector;
+use crate::messaging::slack::SlackConnector;
 use crate::messaging::telegram::TelegramClient;
 use crate::net::http::HttpClient;
 use crate::platform::linux::LinuxPlatform;
@@ -50,14 +53,6 @@ pub fn run() {
 
     let mut auditor = Auditor::new(&platform);
 
-    let http = match HttpClient::new() {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!("sentinel: fatal: failed to initialize HTTP client: {}", e);
-            std::process::exit(1);
-        }
-    };
-
     // Create LLM provider based on config
     let llm: Box<dyn LlmProvider> = match config.provider.as_str() {
         "openai" => {
@@ -95,90 +90,203 @@ pub fn run() {
         }
     };
 
-    let mut telegram = TelegramClient::new(http, &config.telegram_token);
-
     let tool_defs = ToolExecutor::tool_definitions();
     let tool_executor = ToolExecutor::new(&platform, config.command_timeout);
 
-    // Per-chat conversation history
-    let mut conversations: HashMap<i64, Vec<Message>> = HashMap::new();
+    // Build connectors based on config
+    let mut connectors: Vec<Box<dyn Connector>> = Vec::new();
 
-    eprintln!("sentinel: started, polling Telegram...");
-
-    loop {
-        let updates = match telegram.get_updates(30) {
-            Ok(msgs) => msgs,
+    if let Some(ref token) = config.telegram_token {
+        let http = match HttpClient::new() {
+            Ok(h) => h,
             Err(e) => {
-                eprintln!("sentinel: telegram poll error: {}", e);
-                thread::sleep(Duration::from_secs(5));
-                continue;
+                eprintln!("sentinel: fatal: failed to initialize HTTP client: {}", e);
+                std::process::exit(1);
             }
         };
+        connectors.push(Box::new(TelegramClient::new(http, token)));
+        eprintln!("sentinel: telegram connector enabled");
+    }
 
-        for msg in updates {
-            let username = msg.from_username.as_deref().unwrap_or("unknown");
-
-            auditor.log(AuditEvent::MessageReceived {
-                chat_id: msg.chat_id,
-                user_id: msg.from_id,
-                username,
-            });
-
-            // Authorization check
-            if !config.telegram_allowed_users.is_empty()
-                && !config.telegram_allowed_users.contains(&msg.from_id)
-            {
-                auditor.log(AuditEvent::UnauthorizedUser {
-                    user_id: msg.from_id,
-                    username,
-                });
-                let _ = telegram.send_message(msg.chat_id, "Unauthorized.");
-                continue;
-            }
-
-            // Handle /clear command
-            if msg.text.trim() == "/clear" {
-                conversations.remove(&msg.chat_id);
-                let _ = telegram.send_message(msg.chat_id, "Conversation cleared.");
-                continue;
-            }
-
-            // Get or create conversation history
-            let history = conversations.entry(msg.chat_id).or_default();
-
-            // Add user message
-            history.push(Message {
-                role: Role::User,
-                content: vec![ContentBlock::Text {
-                    text: msg.text.clone(),
-                }],
-            });
-
-            // Run agent turn with streaming
-            match run_agent_turn(
-                llm.as_ref(),
-                history,
-                &config,
-                &tool_defs,
-                &tool_executor,
-                &mut auditor,
-                &telegram,
-                msg.chat_id,
-            ) {
-                Ok(()) => {}
+    if let Some(ref token) = config.discord_token {
+        if config.discord_channel_ids.is_empty() {
+            eprintln!("sentinel: warning: discord token set but no channel_ids configured");
+        } else {
+            let http = match HttpClient::new() {
+                Ok(h) => h,
                 Err(e) => {
-                    eprintln!("sentinel: agent error: {}", e);
-                    let error_msg = format!("Error: {}", e);
-                    let _ = telegram.send_message(msg.chat_id, &error_msg);
+                    eprintln!("sentinel: fatal: failed to initialize HTTP client: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            match DiscordConnector::new(http, token, &config.discord_channel_ids) {
+                Ok(dc) => {
+                    connectors.push(Box::new(dc));
+                    eprintln!("sentinel: discord connector enabled");
+                }
+                Err(e) => {
+                    eprintln!("sentinel: warning: failed to initialize discord: {}", e);
                 }
             }
+        }
+    }
 
-            // Trim history if too long
-            if history.len() > MAX_HISTORY_MESSAGES {
-                let drain_count = history.len() - MAX_HISTORY_MESSAGES;
-                history.drain(..drain_count);
+    if let Some(ref token) = config.slack_bot_token {
+        if config.slack_channel_ids.is_empty() {
+            eprintln!("sentinel: warning: slack token set but no channel_ids configured");
+        } else {
+            let http = match HttpClient::new() {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("sentinel: fatal: failed to initialize HTTP client: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            match SlackConnector::new(http, token, &config.slack_channel_ids) {
+                Ok(sc) => {
+                    connectors.push(Box::new(sc));
+                    eprintln!("sentinel: slack connector enabled");
+                }
+                Err(e) => {
+                    eprintln!("sentinel: warning: failed to initialize slack: {}", e);
+                }
             }
         }
+    }
+
+    if connectors.is_empty() {
+        eprintln!("sentinel: fatal: no messaging connectors available");
+        std::process::exit(1);
+    }
+
+    // Per-conversation history keyed by "platform:channel_id"
+    let mut conversations: HashMap<String, Vec<Message>> = HashMap::new();
+
+    // Use short poll timeout when multiple connectors are active
+    let poll_timeout = if connectors.len() > 1 { 2 } else { 30 };
+
+    eprintln!(
+        "sentinel: started with {} connector(s), polling...",
+        connectors.len()
+    );
+
+    loop {
+        let mut had_messages = false;
+
+        for i in 0..connectors.len() {
+            let updates = match connectors[i].poll_messages(poll_timeout) {
+                Ok(msgs) => msgs,
+                Err(e) => {
+                    eprintln!(
+                        "sentinel: {} poll error: {}",
+                        connectors[i].platform_name(),
+                        e
+                    );
+                    thread::sleep(Duration::from_secs(5));
+                    continue;
+                }
+            };
+
+            if !updates.is_empty() {
+                had_messages = true;
+            }
+
+            for msg in updates {
+                let platform = connectors[i].platform_name();
+                let username = msg.username.as_deref().unwrap_or("unknown");
+
+                auditor.log(AuditEvent::MessageReceived {
+                    chat_id: msg.channel_id.parse::<i64>().unwrap_or(0),
+                    user_id: msg.user_id.parse::<i64>().unwrap_or(0),
+                    username,
+                });
+
+                // Authorization check
+                if !is_authorized(&config, platform, &msg.user_id) {
+                    auditor.log(AuditEvent::UnauthorizedUser {
+                        user_id: msg.user_id.parse::<i64>().unwrap_or(0),
+                        username,
+                    });
+                    let _ = connectors[i].send_message(&msg.channel_id, "Unauthorized.");
+                    continue;
+                }
+
+                let conv_key = format!("{}:{}", platform, msg.channel_id);
+
+                // Handle /clear command
+                if msg.text.trim() == "/clear" {
+                    conversations.remove(&conv_key);
+                    let _ = connectors[i]
+                        .send_message(&msg.channel_id, "Conversation cleared.");
+                    continue;
+                }
+
+                // Get or create conversation history
+                let history = conversations.entry(conv_key).or_default();
+
+                // Add user message
+                history.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: msg.text.clone(),
+                    }],
+                });
+
+                // Run agent turn with streaming
+                match run_agent_turn(
+                    llm.as_ref(),
+                    history,
+                    &config,
+                    &tool_defs,
+                    &tool_executor,
+                    &mut auditor,
+                    &*connectors[i],
+                    &msg.channel_id,
+                ) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("sentinel: agent error: {}", e);
+                        let error_msg = format!("Error: {}", e);
+                        let _ = connectors[i].send_message(&msg.channel_id, &error_msg);
+                    }
+                }
+
+                // Trim history if too long
+                if history.len() > MAX_HISTORY_MESSAGES {
+                    let drain_count = history.len() - MAX_HISTORY_MESSAGES;
+                    history.drain(..drain_count);
+                }
+            }
+        }
+
+        // For HTTP-polling connectors without long-poll, avoid tight loops
+        if !had_messages && connectors.len() > 1 {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+}
+
+fn is_authorized(config: &Config, platform: &str, user_id: &str) -> bool {
+    match platform {
+        "telegram" => {
+            if config.telegram_allowed_users.is_empty() {
+                return true;
+            }
+            if let Ok(id) = user_id.parse::<i64>() {
+                config.telegram_allowed_users.contains(&id)
+            } else {
+                false
+            }
+        }
+        "discord" => {
+            config.discord_allowed_users.is_empty()
+                || config.discord_allowed_users.iter().any(|u| u == user_id)
+        }
+        "slack" => {
+            config.slack_allowed_users.is_empty()
+                || config.slack_allowed_users.iter().any(|u| u == user_id)
+        }
+        _ => false,
     }
 }
 
@@ -189,37 +297,38 @@ fn run_agent_turn(
     tool_defs: &[ToolDef],
     tool_executor: &ToolExecutor,
     auditor: &mut Auditor,
-    telegram: &TelegramClient,
-    chat_id: i64,
+    connector: &dyn Connector,
+    channel_id: &str,
 ) -> Result<(), String> {
     let system = config.system_prompt.as_deref();
 
     for _round in 0..MAX_TOOL_ROUNDS {
-        // Streaming state for real-time Telegram updates
+        // Streaming state for real-time message updates
         let mut streamed_text = String::new();
-        let mut telegram_msg_id: Option<i64> = None;
+        let mut platform_msg_id: Option<String> = None;
         let mut last_edit = Instant::now();
 
         let api_resp = {
             let streamed_text_ref = &mut streamed_text;
-            let telegram_msg_id_ref = &mut telegram_msg_id;
+            let platform_msg_id_ref = &mut platform_msg_id;
             let last_edit_ref = &mut last_edit;
 
             let mut on_text = |delta: &str| {
                 streamed_text_ref.push_str(delta);
 
-                // Send/edit Telegram message periodically (every 500ms)
+                // Send/edit message periodically (every 500ms)
                 let should_update = last_edit_ref.elapsed() >= Duration::from_millis(500);
                 if !should_update {
                     return;
                 }
 
-                if let Some(msg_id) = *telegram_msg_id_ref {
-                    let _ = telegram.edit_message_text(chat_id, msg_id, streamed_text_ref);
+                if let Some(ref msg_id) = *platform_msg_id_ref {
+                    let _ =
+                        connector.edit_message_text(channel_id, msg_id, streamed_text_ref);
                 } else if streamed_text_ref.len() >= 10 {
                     // Wait for at least 10 chars before sending initial message
-                    match telegram.send_message_get_id(chat_id, streamed_text_ref) {
-                        Ok(id) => *telegram_msg_id_ref = Some(id),
+                    match connector.send_message_get_id(channel_id, streamed_text_ref) {
+                        Ok(id) => *platform_msg_id_ref = Some(id),
                         Err(e) => eprintln!("sentinel: stream send error: {}", e),
                     }
                 }
@@ -250,13 +359,13 @@ fn run_agent_turn(
             StopReason::EndTurn | StopReason::MaxTokens => {
                 let text = extract_text(&api_resp.content);
 
-                // Send final text via Telegram
-                if let Some(msg_id) = telegram_msg_id {
+                // Send final text via connector
+                if let Some(ref msg_id) = platform_msg_id {
                     // Edit with final complete text
-                    let _ = telegram.edit_message_text(chat_id, msg_id, &text);
+                    let _ = connector.edit_message_text(channel_id, msg_id, &text);
                 } else {
                     // No streaming happened (or very short response) — send normally
-                    if let Err(e) = telegram.send_message(chat_id, &text) {
+                    if let Err(e) = connector.send_message(channel_id, &text) {
                         eprintln!("sentinel: failed to send message: {}", e);
                     }
                 }
@@ -264,10 +373,10 @@ fn run_agent_turn(
             }
             StopReason::ToolUse => {
                 // If we streamed partial text, finalize it
-                if let Some(msg_id) = telegram_msg_id {
+                if let Some(ref msg_id) = platform_msg_id {
                     let text = extract_text(&api_resp.content);
                     if !text.is_empty() {
-                        let _ = telegram.edit_message_text(chat_id, msg_id, &text);
+                        let _ = connector.edit_message_text(channel_id, msg_id, &text);
                     }
                 }
 

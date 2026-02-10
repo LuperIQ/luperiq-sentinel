@@ -143,6 +143,21 @@ impl HttpClient {
         self.request("POST", &parsed, Some(body.as_bytes()), &headers)
     }
 
+    pub fn patch_json(
+        &self,
+        url: &str,
+        body: &str,
+        extra_headers: &[(&str, &str)],
+    ) -> Result<HttpResponse, HttpError> {
+        let parsed = parse_url(url)?;
+        let mut headers = Vec::new();
+        headers.push(("Content-Type", "application/json"));
+        for (k, v) in extra_headers {
+            headers.push((k, v));
+        }
+        self.request("PATCH", &parsed, Some(body.as_bytes()), &headers)
+    }
+
     pub fn get(
         &self,
         url: &str,

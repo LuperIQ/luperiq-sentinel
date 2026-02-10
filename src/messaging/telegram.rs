@@ -1,3 +1,4 @@
+use crate::messaging::{Connector, ConnectorError, IncomingMessage};
 use crate::net::http::{HttpClient, HttpError};
 use crate::net::json::{self, json_obj, JsonValue};
 
@@ -226,6 +227,69 @@ fn split_message(text: &str) -> Vec<String> {
     }
 
     chunks
+}
+
+// ── Connector trait impl ─────────────────────────────────────────────────────
+
+impl From<TelegramError> for ConnectorError {
+    fn from(e: TelegramError) -> Self {
+        match e {
+            TelegramError::Http(h) => ConnectorError::Http(h),
+            TelegramError::Json(s) => ConnectorError::Json(s),
+            TelegramError::Api(s) => ConnectorError::Api(s),
+        }
+    }
+}
+
+impl Connector for TelegramClient {
+    fn poll_messages(&mut self, timeout_secs: u32) -> Result<Vec<IncomingMessage>, ConnectorError> {
+        let msgs = self.get_updates(timeout_secs)?;
+        Ok(msgs
+            .into_iter()
+            .map(|m| IncomingMessage {
+                channel_id: m.chat_id.to_string(),
+                user_id: m.from_id.to_string(),
+                username: m.from_username,
+                text: m.text,
+            })
+            .collect())
+    }
+
+    fn send_message(&self, channel_id: &str, text: &str) -> Result<(), ConnectorError> {
+        let chat_id: i64 = channel_id
+            .parse()
+            .map_err(|_| ConnectorError::Api("invalid chat_id".into()))?;
+        TelegramClient::send_message(self, chat_id, text)?;
+        Ok(())
+    }
+
+    fn send_message_get_id(&self, channel_id: &str, text: &str) -> Result<String, ConnectorError> {
+        let chat_id: i64 = channel_id
+            .parse()
+            .map_err(|_| ConnectorError::Api("invalid chat_id".into()))?;
+        let msg_id = TelegramClient::send_message_get_id(self, chat_id, text)?;
+        Ok(msg_id.to_string())
+    }
+
+    fn edit_message_text(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        text: &str,
+    ) -> Result<(), ConnectorError> {
+        let chat_id: i64 = channel_id
+            .parse()
+            .map_err(|_| ConnectorError::Api("invalid chat_id".into()))?;
+        let msg_id: i64 = message_id
+            .parse()
+            .map_err(|_| ConnectorError::Api("invalid message_id".into()))?;
+        TelegramClient::edit_message_text(self, chat_id, msg_id, text)?;
+        Ok(())
+    }
+
+    fn platform_name(&self) -> &'static str {
+        "telegram"
+    }
 }
 
 #[cfg(test)]
